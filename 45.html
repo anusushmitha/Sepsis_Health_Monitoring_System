@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Sepsis Prediction</title>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #e0f7fa;
+            color: #333;
+            text-align: center;
+            margin-top: 50px;
+        }
+        .container {
+            width: 80%;
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: #ffffff;
+            border-radius: 10px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+            padding: 20px;
+        }
+        .header {
+            background-color: #00796b;
+            color: #fff;
+            padding: 20px;
+            border-radius: 10px 10px 0 0;
+        }
+        .data-container {
+            margin: 20px auto;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            background-color: #f1f8e9;
+        }
+        .data-container h2 {
+            margin: 15px 0;
+            color: #00796b;
+        }
+        #result {
+            font-weight: bold;
+            font-size: 1.4em;
+            margin-top: 20px;
+            color: #d32f2f;
+        }
+        p.description {
+            margin: 20px auto;
+            font-size: 1em;
+            line-height: 1.6;
+            text-align: left;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Real-Time Sepsis Prediction </h1>
+        </div>
+        <h2>Patient Records</h2>
+        
+        <div class="data-container">
+            <h2>Temperature: <span id="objectTemp">--</span> °C</h2>
+            <h2>Heart Rate: <span id="heartRate">--</span> BPM</h2>
+            <h2>SpO2: <span id="spo2">--</span> %</h2>
+        </div>
+        <p id="result">Please wait for analysis...</p>
+        <p class="description">Sepsis prediction involves detecting the early signs of a life-threatening response to infection, which can lead to organ failure. Common symptoms include fever, rapid heart rate, rapid breathing, and confusion. Early detection through monitoring vital signs like temperature, heart rate, and oxygen levels can improve outcomes.</p>
+    </div>
+
+    <script>
+        // MQTT broker settings
+        const mqttBrokerUrl = 'wss://broker.emqx.io:8084/mqtt';
+        const clientId = 'mqtt_dashboard_' + Math.random().toString(16).substr(2, 8);
+
+        // MQTT topics
+        const tempTopic = 'sensor/temperature';
+        const heartRateTopic = 'sensor/heartrate';
+        const spo2Topic = 'sensor/spo2';
+
+        // Sepsis prediction model
+        async function loadModel() {
+            const response = await fetch('random_forest_sepsis.json');
+            return await response.json();
+        }
+
+        // Function to make predictions using the random forest model
+        function predictSepsis(model, sample) {
+            let votes = new Array(model.trees.length).fill(0);
+
+            for (let i = 0; i < model.trees.length; i++) {
+                let tree = model.trees[i];
+                let node = 0;
+
+                while (true) {
+                    if (tree.children_left[node] === -1 && tree.children_right[node] === -1) {
+                        votes[i] = tree.value[node][0].indexOf(Math.max(...tree.value[node][0]));
+                        break;
+                    }
+
+                    if (sample[tree.feature[node]] <= tree.threshold[node]) {
+                        node = tree.children_left[node];
+                    } else {
+                        node = tree.children_right[node];
+                    }
+                }
+            }
+
+            // Majority vote
+            const voteCounts = {};
+            votes.forEach(vote => {
+                voteCounts[vote] = (voteCounts[vote] || 0) + 1;
+            });
+
+            return parseInt(Object.keys(voteCounts).reduce((a, b) => voteCounts[a] > voteCounts[b] ? a : b));
+        }
+
+        // Load the model on startup
+        let model;
+        loadModel().then(m => model = m);
+
+        // Real-time sensor data variables
+        let temp, bpm, spo2;
+
+        // Connect to MQTT broker
+        const client = mqtt.connect(mqttBrokerUrl, { clientId: clientId });
+
+        // MQTT connection established
+        client.on('connect', () => {
+            console.log('Connected to MQTT broker');
+            client.subscribe(tempTopic);
+            client.subscribe(heartRateTopic);
+            client.subscribe(spo2Topic);
+        });
+
+        // Handle incoming MQTT messages
+        client.on('message', (topic, message) => {
+            const payload = message.toString();
+            if (topic === tempTopic) {
+                temp = parseFloat(payload.split(',')[1].split(':')[1].trim());
+                document.getElementById('objectTemp').innerText = temp.toFixed(2);
+            } else if (topic === heartRateTopic) {
+                bpm = parseFloat(payload.split(':')[1].trim());
+                document.getElementById('heartRate').innerText = bpm.toFixed(2);
+            } else if (topic === spo2Topic) {
+                spo2 = parseFloat(payload.split(':')[1].trim());
+                document.getElementById('spo2').innerText = spo2.toFixed(2);
+            }
+
+            // Check if all sensor values are available
+            if (temp && bpm && spo2 && model) {
+                const prediction = predictSepsis(model, [temp, bpm, spo2]);
+                document.getElementById('result').innerText = prediction === 1 ? 'Sepsis Detected' : 'No Sepsis Detected';
+            }
+        });
+
+        // Handle MQTT connection error
+        client.on('error', (error) => {
+            console.error('MQTT connection error:', error);
+        });
+    </script>
+</body>
+</html>
